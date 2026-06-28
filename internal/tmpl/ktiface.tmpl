@@ -27,6 +27,6 @@ interface Queries {
   {{- if eq .Cmd ":execresult"}}
   fun {{.MethodName}}({{.Arg.Args}}): Long
   {{- end}}
-  {{end}}
+{{end}}
 }
 

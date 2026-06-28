@@ -12,6 +12,63 @@ type Importer struct {
 	DataClasses []Struct
 	Enums       []Enum
 	Queries     []Query
+	MapperType  string
+}
+
+// sortedKeys returns the keys of a string set in sorted order.
+func sortedKeys(set map[string]struct{}) []string {
+	out := make([]string, 0, len(set))
+	for s := range set {
+		out = append(out, s)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// modelJsonTypes collects the fully-qualified json types referenced by data classes.
+func (i *Importer) modelJsonTypes() map[string]struct{} {
+	set := map[string]struct{}{}
+	for si := range i.DataClasses {
+		for _, f := range i.DataClasses[si].Fields {
+			if f.Type.IsJson && f.Type.JsonType != "" {
+				set[f.Type.JsonType] = struct{}{}
+			}
+		}
+	}
+	return set
+}
+
+// UsesJson reports whether any query reads or writes a json column, meaning
+// QueriesImpl needs a JsonMapper injected.
+func (i *Importer) UsesJson() bool {
+	return len(i.queryJsonTypes()) > 0
+}
+
+// queryJsonTypes collects the fully-qualified json types referenced by queries
+// (results and parameters).
+func (i *Importer) queryJsonTypes() map[string]struct{} {
+	set := map[string]struct{}{}
+	add := func(t ktType) {
+		if t.IsJson && t.JsonType != "" {
+			set[t.JsonType] = struct{}{}
+		}
+	}
+	for _, q := range i.Queries {
+		if !q.Ret.isEmpty() {
+			add(q.Ret.Typ)
+			if q.Ret.Struct != nil {
+				for _, f := range q.Ret.Struct.Fields {
+					add(f.Type)
+				}
+			}
+		}
+		if !q.Arg.isEmpty() {
+			for _, f := range q.Arg.Struct.Fields {
+				add(f.Type)
+			}
+		}
+	}
+	return set
 }
 
 func (i *Importer) usesType(typ string) bool {
@@ -62,7 +119,19 @@ func (i *Importer) interfaceImports() [][]string {
 	}
 
 	sort.Strings(stds)
-	return [][]string{stds}
+	return groups(stds, sortedKeys(i.queryJsonTypes()))
+}
+
+// groups assembles import blocks, dropping any that are empty so the template
+// does not emit stray blank lines.
+func groups(blocks ...[]string) [][]string {
+	out := [][]string{}
+	for _, b := range blocks {
+		if len(b) > 0 {
+			out = append(out, b)
+		}
+	}
+	return out
 }
 
 func (i *Importer) modelImports() [][]string {
@@ -93,7 +162,7 @@ func (i *Importer) modelImports() [][]string {
 	}
 
 	sort.Strings(stds)
-	return [][]string{stds}
+	return groups(stds, sortedKeys(i.modelJsonTypes()))
 }
 
 func stdImports(uses func(name string) bool) map[string]struct{} {
@@ -169,11 +238,20 @@ func (i *Importer) queryImports(filename string) [][]string {
 		std["java.sql.Types"] = struct{}{}
 	}
 
+	jsonTypes := i.queryJsonTypes()
+	if len(jsonTypes) > 0 {
+		// setObject(idx, ..., Types.OTHER) is used to bind jsonb parameters.
+		std["java.sql.Types"] = struct{}{}
+		if i.MapperType != "" {
+			jsonTypes[i.MapperType] = struct{}{}
+		}
+	}
+
 	stds := make([]string, 0, len(std))
 	for s := range std {
 		stds = append(stds, s)
 	}
 
 	sort.Strings(stds)
-	return [][]string{stds}
+	return groups(stds, sortedKeys(jsonTypes))
 }

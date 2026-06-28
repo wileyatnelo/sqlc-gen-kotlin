@@ -34,10 +34,16 @@ func Generate(ctx context.Context, req *plugin.GenerateRequest) (*plugin.Generat
 			return nil, err
 		}
 	}
+	if err := conf.Validate(); err != nil {
+		return nil, err
+	}
+	if err := conf.ValidateJsonTypes(req); err != nil {
+		return nil, err
+	}
 
 	enums := core.BuildEnums(req)
 	structs := core.BuildDataClasses(conf, req)
-	queries, err := core.BuildQueries(req, structs)
+	queries, err := core.BuildQueries(conf, req, structs)
 	if err != nil {
 		return nil, err
 	}
@@ -47,6 +53,7 @@ func Generate(ctx context.Context, req *plugin.GenerateRequest) (*plugin.Generat
 		Enums:       enums,
 		DataClasses: structs,
 		Queries:     queries,
+		MapperType:  conf.MapperType(),
 	}
 
 	funcMap := template.FuncMap{
@@ -62,14 +69,22 @@ func Generate(ctx context.Context, req *plugin.GenerateRequest) (*plugin.Generat
 
 	core.DefaultImporter = i
 
+	// Inject a JsonMapper into QueriesImpl only when a query actually reads or
+	// writes a json column; otherwise the parameter (and its import) is unused.
+	jsonMapperClass := ""
+	if i.UsesJson() {
+		jsonMapperClass = core.SimpleName(conf.MapperType())
+	}
+
 	tctx := core.KtTmplCtx{
-		Settings:    req.Settings,
-		Q:           `"""`,
-		Package:     conf.Package,
-		Queries:     queries,
-		Enums:       enums,
-		DataClasses: structs,
-		SqlcVersion: req.SqlcVersion,
+		Settings:        req.Settings,
+		Q:               `"""`,
+		Package:         conf.Package,
+		Queries:         queries,
+		Enums:           enums,
+		DataClasses:     structs,
+		SqlcVersion:     req.SqlcVersion,
+		JsonMapperClass: jsonMapperClass,
 	}
 
 	output := map[string]string{}

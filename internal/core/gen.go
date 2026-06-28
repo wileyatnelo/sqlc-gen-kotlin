@@ -87,6 +87,12 @@ func jdbcSet(t ktType, idx int, name string) string {
 	if t.IsArray {
 		return fmt.Sprintf(`stmt.setArray(%d, conn.createArrayOf("%s", %s.toTypedArray()))`, idx, t.DataType, name)
 	}
+	if t.IsJson {
+		if t.IsNull {
+			return fmt.Sprintf("stmt.setObject(%d, %s?.let { mapper.writeValueAsString(it) }, Types.OTHER)", idx, name)
+		}
+		return fmt.Sprintf("stmt.setObject(%d, mapper.writeValueAsString(%s), Types.OTHER)", idx, name)
+	}
 	if t.IsTime() {
 		return fmt.Sprintf("stmt.setObject(%d, %s)", idx, name)
 	}
@@ -159,6 +165,12 @@ func jdbcGet(t ktType, idx int) string {
 	}
 	if t.IsArray {
 		return fmt.Sprintf(`(results.getArray(%d).array as Array<%s>).toList()`, idx, t.Name)
+	}
+	if t.IsJson {
+		if t.IsNull {
+			return fmt.Sprintf(`results.getString(%d)?.let { mapper.readValue(it, %s::class.java) }`, idx, t.Name)
+		}
+		return fmt.Sprintf(`mapper.readValue(results.getString(%d), %s::class.java)`, idx, t.Name)
 	}
 	if t.IsTime() {
 		return fmt.Sprintf(`results.getObject(%d, %s::class.java)`, idx, t.Name)
@@ -304,9 +316,13 @@ func BuildDataClasses(conf Config, req *plugin.GenerateRequest) []Struct {
 				Comment: table.Comment,
 			}
 			for _, column := range table.Columns {
+				typ := makeType(conf, req, column)
+				// Catalog columns nested under a table do not carry their own
+				// table identifier, so supply it for json override matching.
+				typ.applyJsonOverride(conf, schema.Name, table.Rel.Name, column.Name)
 				s.Fields = append(s.Fields, Field{
 					Name:    memberName(column.Name, req.Settings),
-					Type:    makeType(req, column),
+					Type:    typ,
 					Comment: column.Comment,
 				})
 			}
@@ -324,6 +340,8 @@ type ktType struct {
 	IsEnum   bool
 	IsArray  bool
 	IsNull   bool
+	IsJson   bool
+	JsonType string // fully-qualified Kotlin type for json columns
 	DataType string
 	Engine   string
 }
@@ -371,15 +389,52 @@ func (t ktType) IsBigDecimal() bool {
 	return t.Name == "java.math.BigDecimal"
 }
 
-func makeType(req *plugin.GenerateRequest, col *plugin.Column) ktType {
+// isJSONColumn reports whether a database data type is a json/jsonb column
+// eligible for deserialization into a Kotlin data class.
+func isJSONColumn(dataType string) bool {
+	switch dataType {
+	case "json", "jsonb":
+		return true
+	default:
+		return false
+	}
+}
+
+// colTable returns the schema and table a column belongs to, if known.
+func colTable(col *plugin.Column) (string, string) {
+	if t := col.GetTable(); t != nil {
+		return t.GetSchema(), t.GetName()
+	}
+	return "", ""
+}
+
+func makeType(conf Config, req *plugin.GenerateRequest, col *plugin.Column) ktType {
 	typ, isEnum := ktInnerType(req, col)
-	return ktType{
+	t := ktType{
 		Name:     typ,
 		IsEnum:   isEnum,
 		IsArray:  col.IsArray,
 		IsNull:   !col.NotNull,
 		DataType: sdk.DataType(col.Type),
 		Engine:   req.Settings.Engine,
+	}
+	schema, table := colTable(col)
+	t.applyJsonOverride(conf, schema, table, col.Name)
+	return t
+}
+
+// applyJsonOverride upgrades a jsonb/json column to a user-provided Kotlin type
+// when a matching override is configured. It is a no-op otherwise, so it is safe
+// to call again with richer table context (e.g. from BuildDataClasses, where the
+// catalog column does not carry its own table identifier).
+func (t *ktType) applyJsonOverride(conf Config, schema, table, column string) {
+	if t.IsJson || !conf.jsonEnabled() || !isJSONColumn(t.DataType) {
+		return
+	}
+	if kt, ok := conf.jsonTypeFor(schema, table, column); ok {
+		t.Name = SimpleName(kt)
+		t.JsonType = kt
+		t.IsJson = true
 	}
 }
 
@@ -400,7 +455,7 @@ type goColumn struct {
 	*plugin.Column
 }
 
-func ktColumnsToStruct(req *plugin.GenerateRequest, name string, columns []goColumn, namer func(*plugin.Column, int) string) *Struct {
+func ktColumnsToStruct(conf Config, req *plugin.GenerateRequest, name string, columns []goColumn, namer func(*plugin.Column, int) string) *Struct {
 	gs := Struct{
 		Name: name,
 	}
@@ -417,7 +472,7 @@ func ktColumnsToStruct(req *plugin.GenerateRequest, name string, columns []goCol
 		field := Field{
 			ID:   c.id,
 			Name: fieldName,
-			Type: makeType(req, c.Column),
+			Type: makeType(conf, req, c.Column),
 		}
 		gs.Fields = append(gs.Fields, field)
 		nameSeen[c.Name]++
@@ -484,7 +539,7 @@ func parseInts(s []string) ([]int, error) {
 	return refs, nil
 }
 
-func BuildQueries(req *plugin.GenerateRequest, structs []Struct) ([]Query, error) {
+func BuildQueries(conf Config, req *plugin.GenerateRequest, structs []Struct) ([]Query, error) {
 	qs := make([]Query, 0, len(req.Queries))
 	for _, query := range req.Queries {
 		if query.Name == "" {
@@ -520,7 +575,7 @@ func BuildQueries(req *plugin.GenerateRequest, structs []Struct) ([]Query, error
 				Column: p.Column,
 			})
 		}
-		params := ktColumnsToStruct(req, gq.ClassName+"Bindings", cols, ktParamName)
+		params := ktColumnsToStruct(conf, req, gq.ClassName+"Bindings", cols, ktParamName)
 		gq.Arg = Params{
 			Struct:  params,
 			binding: refs,
@@ -530,7 +585,7 @@ func BuildQueries(req *plugin.GenerateRequest, structs []Struct) ([]Query, error
 			c := query.Columns[0]
 			gq.Ret = QueryValue{
 				Name: "results",
-				Typ:  makeType(req, c),
+				Typ:  makeType(conf, req, c),
 			}
 		} else if len(query.Columns) > 1 {
 			var gs *Struct
@@ -544,7 +599,7 @@ func BuildQueries(req *plugin.GenerateRequest, structs []Struct) ([]Query, error
 				for i, f := range s.Fields {
 					c := query.Columns[i]
 					sameName := f.Name == memberName(ktColumnName(c, i), req.Settings)
-					sameType := f.Type == makeType(req, c)
+					sameType := f.Type == makeType(conf, req, c)
 					sameTable := sdk.SameTableName(c.Table, &s.Table, req.Catalog.DefaultSchema)
 
 					if !sameName || !sameType || !sameTable {
@@ -565,7 +620,7 @@ func BuildQueries(req *plugin.GenerateRequest, structs []Struct) ([]Query, error
 						Column: c,
 					})
 				}
-				gs = ktColumnsToStruct(req, gq.ClassName+"Row", columns, ktColumnName)
+				gs = ktColumnsToStruct(conf, req, gq.ClassName+"Row", columns, ktColumnName)
 				emit = true
 			}
 			gq.Ret = QueryValue{
@@ -596,6 +651,11 @@ type KtTmplCtx struct {
 	EmitJSONTags        bool
 	EmitPreparedQueries bool
 	EmitInterface       bool
+
+	// JsonMapperClass is the simple (unqualified) name of the JsonMapper to
+	// inject into QueriesImpl, set only when a query in this file reads or
+	// writes a json column. Empty means no JsonMapper is needed.
+	JsonMapperClass string
 }
 
 func Offset(v int) int {

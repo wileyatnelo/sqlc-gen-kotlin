@@ -23,7 +23,12 @@ data class {{.Ret.Type}} ( {{- range $i, $e := .Ret.Struct.Fields}}
 {{end}}
 {{end}}
 
-class QueriesImpl(private val conn: Connection) : Queries {
+class QueriesImpl(
+  private val conn: Connection,
+{{- if .JsonMapperClass}}
+  private val mapper: {{.JsonMapperClass}},
+{{- end}}
+) : Queries {
 {{range .Queries}}
 {{if eq .Cmd ":one"}}
 {{range .Comments}}//{{.}}
@@ -31,7 +36,9 @@ class QueriesImpl(private val conn: Connection) : Queries {
   @Throws(SQLException::class)
   override fun {{.MethodName}}({{.Arg.Args}}): {{.Ret.Type}}? {
     return conn.prepareStatement({{.ConstantName}}).use { stmt ->
+      {{- if .Arg.Bindings}}
       {{.Arg.Bindings}}
+      {{- end}}
 
       val results = stmt.executeQuery()
       if (!results.next()) {
@@ -52,7 +59,9 @@ class QueriesImpl(private val conn: Connection) : Queries {
   @Throws(SQLException::class)
   override fun {{.MethodName}}({{.Arg.Args}}): List<{{.Ret.Type}}> {
     return conn.prepareStatement({{.ConstantName}}).use { stmt ->
+      {{- if .Arg.Bindings}}
       {{.Arg.Bindings}}
+      {{- end}}
 
       val results = stmt.executeQuery()
       val ret = mutableListOf<{{.Ret.Type}}>()
@@ -71,7 +80,9 @@ class QueriesImpl(private val conn: Connection) : Queries {
   {{ if $.EmitInterface }}override {{ end -}}
   override fun {{.MethodName}}({{.Arg.Args}}) {
     conn.prepareStatement({{.ConstantName}}).use { stmt ->
+      {{- if .Arg.Bindings}}
       {{ .Arg.Bindings }}
+      {{- end}}
 
       stmt.execute()
     }
@@ -85,7 +96,9 @@ class QueriesImpl(private val conn: Connection) : Queries {
   {{ if $.EmitInterface }}override {{ end -}}
   override fun {{.MethodName}}({{.Arg.Args}}): Int {
     return conn.prepareStatement({{.ConstantName}}).use { stmt ->
+      {{- if .Arg.Bindings}}
       {{ .Arg.Bindings }}
+      {{- end}}
 
       stmt.execute()
       stmt.updateCount
@@ -100,7 +113,9 @@ class QueriesImpl(private val conn: Connection) : Queries {
   {{ if $.EmitInterface }}override {{ end -}}
   override fun {{.MethodName}}({{.Arg.Args}}): Long {
     return conn.prepareStatement({{.ConstantName}}, Statement.RETURN_GENERATED_KEYS).use { stmt ->
+      {{- if .Arg.Bindings}}
       {{ .Arg.Bindings }}
+      {{- end}}
 
       stmt.execute()
 

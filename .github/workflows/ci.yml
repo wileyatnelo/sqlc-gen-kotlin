@@ -17,6 +17,9 @@ jobs:
     - uses: sqlc-dev/setup-sqlc@v4
       with:
         sqlc-version: '1.28.0'
-    - run: make
+    # `make all` builds bin/sqlc-gen-kotlin, which the examples' kt-local
+    # process plugin runs so `sqlc diff` exercises this branch's plugin.
+    - run: make all
+    - run: make test
     - run: sqlc diff
       working-directory: examples

@@ -4,6 +4,12 @@ plugins:
   wasm:
     url: https://downloads.sqlc.dev/plugin/sqlc-gen-kotlin_1.2.0.wasm
     sha256: 22b437ecaea66417bbd3b958339d9868ba89368ce542c936c37305acf373104b
+# kt-local runs the plugin built from this repo (make all -> bin/sqlc-gen-kotlin)
+# so examples exercising unreleased features (e.g. jsonb deserialization) can be
+# generated and diffed in CI.
+- name: kt-local
+  process:
+    cmd: ../bin/sqlc-gen-kotlin
 sql:
 - schema: src/main/resources/authors/postgresql/schema.sql
   queries: src/main/resources/authors/postgresql/query.sql
@@ -61,3 +67,17 @@ sql:
     plugin: kt
     options:
       package: com.example.ondeck.mysql
+- schema: src/main/resources/jsontest/postgresql/schema.sql
+  queries: src/main/resources/jsontest/postgresql/query.sql
+  engine: postgresql
+  codegen:
+  - out: src/main/kotlin/com/example/jsontest
+    plugin: kt-local
+    options:
+      package: com.example.jsontest
+      json_serializer: jackson3
+      json_types:
+      - column: events.payload
+        kt_type: com.example.jsontest.dto.Payload
+      - column: events.metadata
+        kt_type: com.example.jsontest.dto.Payload

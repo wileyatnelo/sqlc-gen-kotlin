@@ -17,3 +17,41 @@ sql:
     options:
       package: com.example.authors.postgresql
 ```
+
+## Options
+
+| Option                           | Description                                                                                          |
+| -------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| `package`                        | Kotlin package for the generated code.                                                               |
+| `emit_exact_table_names`         | Keep table names as-is instead of singularizing them for data class names.                           |
+| `inflection_exclude_table_names` | Table names to exclude from singularization.                                                         |
+| `json_serializer`                | Enables jsonb deserialization. `jackson2` (`com.fasterxml.jackson`) or `jackson3` (`tools.jackson`). |
+| `json_types`                     | List of `{column, kt_type}` entries mapping a `json`/`jsonb` column to a Kotlin type.                |
+
+### Deserializing `jsonb` into Kotlin data classes
+
+By default a `jsonb` column maps to `String`. With `json_serializer` enabled and a
+matching `json_types` entry, the column is deserialized into a Kotlin data class you
+provide. The plugin references your class by its fully-qualified name — it does not
+generate it.
+
+```yaml
+  - out: src/main/kotlin/com/example/events
+    plugin: kt
+    options:
+      package: com.example.events
+      json_serializer: jackson3       # or jackson2
+      json_types:
+      - column: events.payload          # table.column or schema.table.column
+        kt_type: com.example.events.dto.Payload
+```
+
+`QueriesImpl` then takes a `JsonMapper` in its constructor and uses it to
+serialize/deserialize the column:
+
+```kotlin
+val mapper = JsonMapper.builder().addModule(kotlinModule()).build()
+val db = QueriesImpl(conn, mapper)
+```
+
+See `examples/src/main/resources/jsontest` for example usage.
