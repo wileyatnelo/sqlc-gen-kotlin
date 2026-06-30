@@ -25,5 +25,8 @@ interface Queries {
   @Throws(SQLException::class)
   fun listEvents(): List<Event>
 
+  @Throws(SQLException::class)
+  fun listEventsByIds(ids: List<Long>): List<Event>
+
 }
 

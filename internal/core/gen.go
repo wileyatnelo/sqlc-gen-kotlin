@@ -74,35 +74,42 @@ func (v QueryValue) Type() string {
 }
 
 func jdbcSet(t ktType, idx int, name string) string {
+	return jdbcSetExpr(t, strconv.Itoa(idx), name)
+}
+
+// jdbcSetExpr renders a JDBC setter where the statement index and bound value
+// are arbitrary Kotlin expressions (e.g. a literal "1" and a field name, or the
+// loop variables "i" and "v" used when binding a slice element by element).
+func jdbcSetExpr(t ktType, idx, val string) string {
 	if t.IsEnum && t.IsArray {
-		return fmt.Sprintf(`stmt.setArray(%d, conn.createArrayOf("%s", %s.map { v -> v.value }.toTypedArray()))`, idx, t.DataType, name)
+		return fmt.Sprintf(`stmt.setArray(%s, conn.createArrayOf("%s", %s.map { v -> v.value }.toTypedArray()))`, idx, t.DataType, val)
 	}
 	if t.IsEnum {
 		if t.Engine == "postgresql" {
-			return fmt.Sprintf("stmt.setObject(%d, %s.value, %s)", idx, name, "Types.OTHER")
+			return fmt.Sprintf("stmt.setObject(%s, %s.value, %s)", idx, val, "Types.OTHER")
 		} else {
-			return fmt.Sprintf("stmt.setString(%d, %s.value)", idx, name)
+			return fmt.Sprintf("stmt.setString(%s, %s.value)", idx, val)
 		}
 	}
 	if t.IsArray {
-		return fmt.Sprintf(`stmt.setArray(%d, conn.createArrayOf("%s", %s.toTypedArray()))`, idx, t.DataType, name)
+		return fmt.Sprintf(`stmt.setArray(%s, conn.createArrayOf("%s", %s.toTypedArray()))`, idx, t.DataType, val)
 	}
 	if t.IsJson {
 		if t.IsNull {
-			return fmt.Sprintf("stmt.setObject(%d, %s?.let { mapper.writeValueAsString(it) }, Types.OTHER)", idx, name)
+			return fmt.Sprintf("stmt.setObject(%s, %s?.let { mapper.writeValueAsString(it) }, Types.OTHER)", idx, val)
 		}
-		return fmt.Sprintf("stmt.setObject(%d, mapper.writeValueAsString(%s), Types.OTHER)", idx, name)
+		return fmt.Sprintf("stmt.setObject(%s, mapper.writeValueAsString(%s), Types.OTHER)", idx, val)
 	}
 	if t.IsTime() {
-		return fmt.Sprintf("stmt.setObject(%d, %s)", idx, name)
+		return fmt.Sprintf("stmt.setObject(%s, %s)", idx, val)
 	}
 	if t.IsInstant() {
-		return fmt.Sprintf("stmt.setTimestamp(%d, Timestamp.from(%s))", idx, name)
+		return fmt.Sprintf("stmt.setTimestamp(%s, Timestamp.from(%s))", idx, val)
 	}
 	if t.IsUUID() {
-		return fmt.Sprintf("stmt.setObject(%d, %s)", idx, name)
+		return fmt.Sprintf("stmt.setObject(%s, %s)", idx, val)
 	}
-	return fmt.Sprintf("stmt.set%s(%d, %s)", t.Name, idx, name)
+	return fmt.Sprintf("stmt.set%s(%s, %s)", t.Name, idx, val)
 }
 
 type Params struct {
@@ -138,22 +145,66 @@ func (v Params) Args() string {
 	return "\n" + indent(strings.Join(out, ",\n"), 6, -1)
 }
 
+// orderedFields returns the parameter fields in the order their placeholders
+// appear in the SQL (Postgres binding refs), or struct order otherwise (MySQL).
+func (v Params) orderedFields() []Field {
+	if len(v.binding) > 0 {
+		out := make([]Field, 0, len(v.binding))
+		for _, idx := range v.binding {
+			out = append(out, v.Struct.Fields[idx-1])
+		}
+		return out
+	}
+	return v.Struct.Fields
+}
+
+// HasSlices reports whether any parameter is a sqlc.slice() IN-list, which
+// requires binding placeholders dynamically at runtime.
+func (v Params) HasSlices() bool {
+	if v.Struct == nil {
+		return false
+	}
+	for _, f := range v.Struct.Fields {
+		if f.Type.IsSlice {
+			return true
+		}
+	}
+	return false
+}
+
 func (v Params) Bindings() string {
 	if v.isEmpty() {
 		return ""
 	}
+	if v.HasSlices() {
+		return v.sliceBindings()
+	}
 	var out []string
-	if len(v.binding) > 0 {
-		for i, idx := range v.binding {
-			f := v.Struct.Fields[idx-1]
-			out = append(out, jdbcSet(f.Type, i+1, f.Name))
-		}
-	} else {
-		for i, f := range v.Struct.Fields {
-			out = append(out, jdbcSet(f.Type, i+1, f.Name))
-		}
+	for i, f := range v.orderedFields() {
+		out = append(out, jdbcSet(f.Type, i+1, f.Name))
 	}
 	return indent(strings.Join(out, "\n"), 10, 0)
+}
+
+// sliceBindings binds parameters using a running index because a slice param
+// expands to a variable number of placeholders. Scalars are bound once; slices
+// are bound one element at a time in a loop.
+func (v Params) sliceBindings() string {
+	out := []string{"var i = 1"}
+	for _, f := range v.orderedFields() {
+		if f.Type.IsSlice {
+			elem := f.Type
+			elem.IsSlice = false
+			out = append(out,
+				fmt.Sprintf("for (v in %s) {", f.Name),
+				"    "+jdbcSetExpr(elem, "i", "v"),
+				"    i++",
+				"}")
+		} else {
+			out = append(out, jdbcSetExpr(f.Type, "i", f.Name), "i++")
+		}
+	}
+	return indent(strings.Join(out, "\n"), 6, 0)
 }
 
 func jdbcGet(t ktType, idx int) string {
@@ -235,6 +286,26 @@ type Query struct {
 	SourceName   string
 	Ret          QueryValue
 	Arg          Params
+}
+
+// SliceReplaceChain returns the Kotlin expression chained onto the SQL constant
+// to expand each sqlc.slice() marker into the right number of placeholders at
+// runtime (or NULL when the list is empty). It is "" when the query has no
+// slices, leaving the prepared statement source byte-identical to before.
+func (q Query) SliceReplaceChain() string {
+	if q.Arg.Struct == nil {
+		return ""
+	}
+	var b strings.Builder
+	for _, f := range q.Arg.Struct.Fields {
+		if !f.Type.IsSlice {
+			continue
+		}
+		marker := fmt.Sprintf("/*SLICE:%s*/?", f.Type.SliceName)
+		fmt.Fprintf(&b, ".replaceFirst(%q, if (%s.isEmpty()) \"NULL\" else List(%s.size) { \"?\" }.joinToString(\",\"))",
+			marker, f.Name, f.Name)
+	}
+	return b.String()
 }
 
 func ktEnumValueName(value string) string {
@@ -336,19 +407,21 @@ func BuildDataClasses(conf Config, req *plugin.GenerateRequest) []Struct {
 }
 
 type ktType struct {
-	Name     string
-	IsEnum   bool
-	IsArray  bool
-	IsNull   bool
-	IsJson   bool
-	JsonType string // fully-qualified Kotlin type for json columns
-	DataType string
-	Engine   string
+	Name      string
+	IsEnum    bool
+	IsArray   bool
+	IsNull    bool
+	IsJson    bool
+	JsonType  string // fully-qualified Kotlin type for json columns
+	IsSlice   bool   // sqlc.slice() param: bound as a variable-length IN list
+	SliceName string // the /*SLICE:name*/ marker name for a slice param
+	DataType  string
+	Engine    string
 }
 
 func (t ktType) String() string {
 	v := t.Name
-	if t.IsArray {
+	if t.IsArray || t.IsSlice {
 		v = fmt.Sprintf("List<%s>", v)
 	} else if t.IsNull {
 		v += "?"
@@ -415,8 +488,12 @@ func makeType(conf Config, req *plugin.GenerateRequest, col *plugin.Column) ktTy
 		IsEnum:   isEnum,
 		IsArray:  col.IsArray,
 		IsNull:   !col.NotNull,
+		IsSlice:  col.IsSqlcSlice,
 		DataType: sdk.DataType(col.Type),
 		Engine:   req.Settings.Engine,
+	}
+	if t.IsSlice {
+		t.SliceName = col.Name
 	}
 	schema, table := colTable(col)
 	t.applyJsonOverride(conf, schema, table, col.Name)
@@ -512,13 +589,23 @@ var postgresPlaceholderRegexp = regexp.MustCompile(`\B\$\d+\b`)
 // HACK: jdbc doesn't support numbered parameters, so we need to transform them to question marks...
 // But there's no access to the SQL parser here, so we just do a dumb regexp replace instead. This won't work if
 // the literal strings contain matching values, but good enough for a prototype.
-func jdbcSQL(s, engine string) (string, []string) {
+//
+// sliceParams maps a 1-based parameter number to its sqlc.slice() marker name.
+// Postgres hands us slice params as a plain "$N" (unlike MySQL, which already
+// emits "/*SLICE:name*/?"); we rewrite those to the same marker so the runtime
+// IN-list expansion is uniform across engines.
+func jdbcSQL(s, engine string, sliceParams map[int]string) (string, []string) {
 	if engine != "postgresql" {
 		return s, nil
 	}
 	var args []string
 	q := postgresPlaceholderRegexp.ReplaceAllStringFunc(s, func(placeholder string) string {
 		args = append(args, placeholder)
+		if n, err := strconv.Atoi(strings.TrimPrefix(placeholder, "$")); err == nil {
+			if name, ok := sliceParams[n]; ok {
+				return fmt.Sprintf("/*SLICE:%s*/?", name)
+			}
+		}
 		return "?"
 	})
 	return q, args
@@ -552,7 +639,14 @@ func BuildQueries(conf Config, req *plugin.GenerateRequest, structs []Struct) ([
 			return nil, errors.New("Support for CopyFrom in Kotlin is not implemented")
 		}
 
-		ql, args := jdbcSQL(query.Text, req.Settings.Engine)
+		sliceParams := map[int]string{}
+		for _, p := range query.Params {
+			if p.Column.GetIsSqlcSlice() {
+				sliceParams[int(p.Number)] = p.Column.Name
+			}
+		}
+
+		ql, args := jdbcSQL(query.Text, req.Settings.Engine, sliceParams)
 		refs, err := parseInts(args)
 		if err != nil {
 			return nil, fmt.Errorf("Invalid parameter reference: %w", err)

@@ -28,6 +28,12 @@ SELECT id, name, payload, metadata FROM events
 ORDER BY id
 """
 
+const val listEventsByIds = """-- name: listEventsByIds :many
+SELECT id, name, payload, metadata FROM events
+WHERE id IN (/*SLICE:ids*/?)
+ORDER BY id
+"""
+
 class QueriesImpl(
   private val conn: Connection,
   private val mapper: JsonMapper,
@@ -85,6 +91,29 @@ class QueriesImpl(
   @Throws(SQLException::class)
   override fun listEvents(): List<Event> {
     return conn.prepareStatement(listEvents).use { stmt ->
+
+      val results = stmt.executeQuery()
+      val ret = mutableListOf<Event>()
+      while (results.next()) {
+          ret.add(Event(
+                results.getLong(1),
+                results.getString(2),
+                mapper.readValue(results.getString(3), Payload::class.java),
+                results.getString(4)?.let { mapper.readValue(it, Payload::class.java) }
+            ))
+      }
+      ret
+    }
+  }
+
+  @Throws(SQLException::class)
+  override fun listEventsByIds(ids: List<Long>): List<Event> {
+    return conn.prepareStatement(listEventsByIds.replaceFirst("/*SLICE:ids*/?", if (ids.isEmpty()) "NULL" else List(ids.size) { "?" }.joinToString(","))).use { stmt ->
+      var i = 1
+      for (v in ids) {
+          stmt.setLong(i, v)
+          i++
+      }
 
       val results = stmt.executeQuery()
       val ret = mutableListOf<Event>()

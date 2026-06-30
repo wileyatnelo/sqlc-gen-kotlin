@@ -50,4 +50,26 @@ class QueriesImplTest {
         Assertions.assertNull(fetched.metadata)
         Assertions.assertEquals(payload, fetched.payload)
     }
+
+    @Test
+    fun testListEventsByIdsSlice() {
+        val db = QueriesImpl(dbtest.getConnection(), mapper)
+
+        val a = db.createEvent("a", Payload(kind = "a"), null)!!
+        val b = db.createEvent("b", Payload(kind = "b"), null)!!
+        db.createEvent("c", Payload(kind = "c"), null)!!
+
+        val selected = db.listEventsByIds(listOf(a.id, b.id))
+        Assertions.assertEquals(listOf(a.id, b.id), selected.map { it.id })
+        Assertions.assertEquals(listOf("a", "b"), selected.map { it.payload.kind })
+    }
+
+    @Test
+    fun testListEventsByIdsEmpty() {
+        val db = QueriesImpl(dbtest.getConnection(), mapper)
+        db.createEvent("a", Payload(kind = "a"), null)
+
+        // An empty list expands to IN (NULL), which matches no rows.
+        Assertions.assertTrue(db.listEventsByIds(emptyList()).isEmpty())
+    }
 }

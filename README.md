@@ -55,3 +55,24 @@ val db = QueriesImpl(conn, mapper)
 ```
 
 See `examples/src/main/resources/jsontest` for example usage.
+
+## IN-list queries with `sqlc.slice()`
+
+`sqlc.slice()` lets a single parameter expand into a variable-length `IN (...)` list:
+
+```sql
+-- name: ListEventsByIds :many
+SELECT id, name, payload, metadata FROM events
+WHERE id IN (sqlc.slice('ids'))
+ORDER BY id;
+```
+
+generates a `List` parameter and expands the placeholders at runtime:
+
+```kotlin
+fun listEventsByIds(ids: List<Long>): List<Event>
+```
+
+An empty list expands to `IN (NULL)`, which matches no rows. This works on both
+MySQL and PostgreSQL. (On PostgreSQL you can also use the native array form,
+`WHERE id = ANY($1::bigint[])`, which likewise produces a `List` parameter.)

@@ -10,3 +10,8 @@ WHERE id = $1 LIMIT 1;
 -- name: ListEvents :many
 SELECT id, name, payload, metadata FROM events
 ORDER BY id;
+
+-- name: ListEventsByIds :many
+SELECT id, name, payload, metadata FROM events
+WHERE id IN (sqlc.slice('ids'))
+ORDER BY id;

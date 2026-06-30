@@ -35,7 +35,7 @@ class QueriesImpl(
 {{end}}
   @Throws(SQLException::class)
   override fun {{.MethodName}}({{.Arg.Args}}): {{.Ret.Type}}? {
-    return conn.prepareStatement({{.ConstantName}}).use { stmt ->
+    return conn.prepareStatement({{.ConstantName}}{{.SliceReplaceChain}}).use { stmt ->
       {{- if .Arg.Bindings}}
       {{.Arg.Bindings}}
       {{- end}}
@@ -58,7 +58,7 @@ class QueriesImpl(
 {{end}}
   @Throws(SQLException::class)
   override fun {{.MethodName}}({{.Arg.Args}}): List<{{.Ret.Type}}> {
-    return conn.prepareStatement({{.ConstantName}}).use { stmt ->
+    return conn.prepareStatement({{.ConstantName}}{{.SliceReplaceChain}}).use { stmt ->
       {{- if .Arg.Bindings}}
       {{.Arg.Bindings}}
       {{- end}}
@@ -79,7 +79,7 @@ class QueriesImpl(
   @Throws(SQLException::class)
   {{ if $.EmitInterface }}override {{ end -}}
   override fun {{.MethodName}}({{.Arg.Args}}) {
-    conn.prepareStatement({{.ConstantName}}).use { stmt ->
+    conn.prepareStatement({{.ConstantName}}{{.SliceReplaceChain}}).use { stmt ->
       {{- if .Arg.Bindings}}
       {{ .Arg.Bindings }}
       {{- end}}
@@ -95,7 +95,7 @@ class QueriesImpl(
   @Throws(SQLException::class)
   {{ if $.EmitInterface }}override {{ end -}}
   override fun {{.MethodName}}({{.Arg.Args}}): Int {
-    return conn.prepareStatement({{.ConstantName}}).use { stmt ->
+    return conn.prepareStatement({{.ConstantName}}{{.SliceReplaceChain}}).use { stmt ->
       {{- if .Arg.Bindings}}
       {{ .Arg.Bindings }}
       {{- end}}
@@ -112,7 +112,7 @@ class QueriesImpl(
   @Throws(SQLException::class)
   {{ if $.EmitInterface }}override {{ end -}}
   override fun {{.MethodName}}({{.Arg.Args}}): Long {
-    return conn.prepareStatement({{.ConstantName}}, Statement.RETURN_GENERATED_KEYS).use { stmt ->
+    return conn.prepareStatement({{.ConstantName}}{{.SliceReplaceChain}}, Statement.RETURN_GENERATED_KEYS).use { stmt ->
       {{- if .Arg.Bindings}}
       {{ .Arg.Bindings }}
       {{- end}}
