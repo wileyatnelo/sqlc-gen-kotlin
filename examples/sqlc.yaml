@@ -81,3 +81,11 @@ sql:
         kt_type: com.example.jsontest.dto.Payload
       - column: events.metadata
         kt_type: com.example.jsontest.dto.Payload
+- schema: src/main/resources/nulltest/postgresql/schema.sql
+  queries: src/main/resources/nulltest/postgresql/query.sql
+  engine: postgresql
+  codegen:
+  - out: src/main/kotlin/com/example/nulltest
+    plugin: kt-local
+    options:
+      package: com.example.nulltest
