@@ -76,3 +76,29 @@ fun listEventsByIds(ids: List<Long>): List<Event>
 An empty list expands to `IN (NULL)`, which matches no rows. This works on both
 MySQL and PostgreSQL. (On PostgreSQL you can also use the native array form,
 `WHERE id = ANY($1::bigint[])`, which likewise produces a `List` parameter.)
+
+## Nullable numeric and boolean columns
+
+JDBC's primitive getters — `getInt`, `getLong`, `getShort`, `getByte`, `getDouble`,
+`getFloat`, `getBoolean` — return `0`/`0.0`/`false` for a SQL NULL, so on their own
+they cannot distinguish "absent" from "zero". Row mappers therefore guard a nullable
+column with `wasNull()`:
+
+```kotlin
+data class Reading (
+  val countBig: Long?,
+  val requiredBig: Long
+)
+
+// generated read
+Reading(
+    results.getLong(1).takeUnless { results.wasNull() },  // nullable -> guarded
+    results.getLong(2)                                    // NOT NULL -> plain read
+)
+```
+
+A genuine `0` still reads as `0`; only SQL NULL becomes `null`. `NOT NULL` columns are
+read directly, and getters that already return a reference type (`getString`,
+`getBigDecimal`, `getObject`) need no guard because they report NULL as `null`.
+
+See `examples/src/main/resources/nulltest` for example usage.
