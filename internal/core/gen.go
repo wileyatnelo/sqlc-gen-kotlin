@@ -239,6 +239,12 @@ func jdbcGet(t ktType, idx int) string {
 	if t.IsBigDecimal() {
 		return fmt.Sprintf(`results.getBigDecimal(%d)`, idx)
 	}
+	// A primitive getter returns 0/0.0/false for SQL NULL, so a nullable column needs
+	// wasNull() to tell "absent" from "zero". We need to read first, then check if the
+	// read value "wasNull()."
+	if t.IsNull && t.isPrimitive() {
+		return fmt.Sprintf(`results.get%s(%d).takeUnless { results.wasNull() }`, t.Name, idx)
+	}
 	return fmt.Sprintf(`results.get%s(%d)`, t.Name, idx)
 }
 
@@ -460,6 +466,19 @@ func (t ktType) IsUUID() bool {
 
 func (t ktType) IsBigDecimal() bool {
 	return t.Name == "java.math.BigDecimal"
+}
+
+// isPrimitive reports whether this type is read through a JDBC primitive getter --
+// ResultSet.getInt/getLong/getShort/getByte/getDouble/getFloat/getBoolean. Those return a
+// zero value rather than null for SQL NULL, so a nullable one needs a wasNull() guard.
+// Reference-typed getters (getString, getBigDecimal, getObject) report NULL as null.
+func (t ktType) isPrimitive() bool {
+	switch t.Name {
+	case "Byte", "Short", "Int", "Long", "Float", "Double", "Boolean":
+		return true
+	default:
+		return false
+	}
 }
 
 // isJSONColumn reports whether a database data type is a json/jsonb column
