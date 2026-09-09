@@ -109,6 +109,12 @@ func jdbcSetExpr(t ktType, idx, val string) string {
 	if t.IsUUID() {
 		return fmt.Sprintf("stmt.setObject(%s, %s)", idx, val)
 	}
+	// Every other type's Kotlin name doubles as its JDBC setter suffix, but numeric maps to
+	// the qualified java.math.BigDecimal, which would render as the non-existent
+	// "stmt.setjava.math.BigDecimal". Route it to the real method, as jdbcGet does.
+	if t.IsBigDecimal() {
+		return fmt.Sprintf("stmt.setBigDecimal(%s, %s)", idx, val)
+	}
 	return fmt.Sprintf("stmt.set%s(%s, %s)", t.Name, idx, val)
 }
 
